@@ -26,7 +26,8 @@ Amazon ML/
 │   ├── __init__.py
 │   ├── data_inspection.py
 │   ├── data_cleaning.py
-│   └── blocking.py
+│   ├── blocking.py
+│   └── matching_model.py
 │
 ├── utils/
 │   └── validate_submission.py
@@ -44,6 +45,7 @@ Amazon ML/
   - `src/data_inspection.py`: Inspects dataset shape, columns, missing values, duplicates, and preview rows.
   - `src/data_cleaning.py`: Normalizes noisy business names and addresses (stripping legal suffixes, standardizing abbreviations across US, India, and France).
   - `src/blocking.py`: High-recall multi-key candidate generation and token Jaccard candidate ranking.
+  - `src/matching_model.py`: Pairwise feature extraction, LightGBM classification, F_0.5 threshold optimization, and final prediction export.
 - **`utils/validate_submission.py`**: Official submission validation script to verify format compliance before leaderboard submission.
 - **`output/`**: Directory reserved for intermediate candidates (`candidate_pairs.tsv`) and final predictions (`matching_results.tsv`).
 - **`Documentation_template.md`**: Template for contest methodology write-up.
@@ -77,6 +79,16 @@ This tests and demonstrates the normalization routines on representative busines
 
 ### 3. Blocking & Candidate Generation (Step 3)
 ```bash
-python src/blocking.py
+python src/blocking.py --mode benchmark
 ```
-This demonstrates the multi-key inverted index blocking mechanism and lightweight candidate retrieval.
+Evaluates candidate recall on ground truth and demonstrates the multi-key inverted index blocking mechanism.
+
+### 4. Matching Model & Prediction (Step 4)
+```bash
+# Train LightGBM classifier and find optimal F_0.5 threshold
+python src/matching_model.py --mode train
+
+# Run inference and generate submission files
+python src/matching_model.py --mode predict
+```
+This trains the pairwise model, optimizes decision threshold for $F_{0.5}$, and exports `output/matching_results.tsv` and `output/candidate_pairs.tsv`.

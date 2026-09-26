@@ -6,6 +6,8 @@ dataset/
 # Output results (keep output folder, ignore big intermediate and submission files)
 output/*.tsv
 output/*.csv
+output/*.pkl
+*.pkl
 !output/.gitkeep
 
 # Python cache & virtual environments

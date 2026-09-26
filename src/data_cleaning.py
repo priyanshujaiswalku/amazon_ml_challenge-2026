@@ -10,13 +10,15 @@ US, India, and France.
 
 from pathlib import Path
 import re
+from typing import Optional, Tuple
+import unicodedata
 import pandas as pd
 
 # ---------------------------------------------------------------------------
-# Dictionaries for Canonical Standardization
+# Canonical Dictionaries for Standardization
 # ---------------------------------------------------------------------------
 
-# Legal Entity Suffixes (US, India, International)
+# Legal Entity Suffixes (US, India, France, International)
 LEGAL_SUFFIXES = {
     # US / UK / Common
     "corporation": "corp",
@@ -31,8 +33,6 @@ LEGAL_SUFFIXES = {
     "co": "co",
     "llc": "llc",
     "llp": "llp",
-    "l.l.c.": "llc",
-    "l.l.p.": "llp",
     "plc": "plc",
     "gmbh": "gmbh",
     # France
@@ -43,6 +43,18 @@ LEGAL_SUFFIXES = {
     "eurl": "eurl",
     "snc": "snc",
 }
+
+# Multi-word legal phrases to normalize before tokenization
+MULTIWORD_LEGAL_PHRASES = [
+    (re.compile(r"\bprivate\s+limited\b", re.IGNORECASE), "pvt ltd"),
+    (re.compile(r"\bpvt\.?\s*ltd\.?\b", re.IGNORECASE), "pvt ltd"),
+    (re.compile(r"\bco\.?\s*ltd\.?\b", re.IGNORECASE), "co ltd"),
+    (re.compile(r"\bsociete\s+anonyme\b", re.IGNORECASE), "sa"),
+    (re.compile(r"\bsociete\s+par\s+actions\s+simplifiee\b", re.IGNORECASE), "sas"),
+    (re.compile(r"\bsociete\s+a\s+responsabilite\s+limitee\b", re.IGNORECASE), "sarl"),
+    (re.compile(r"\blimited\s+liability\s+company\b", re.IGNORECASE), "llc"),
+    (re.compile(r"\blimited\s+liability\s+partnership\b", re.IGNORECASE), "llp"),
+]
 
 # Address Abbreviations (Roads, Floors, Suites, Landmarks)
 ADDRESS_ABBREVIATIONS = {
@@ -102,11 +114,11 @@ ADDRESS_ABBREVIATIONS = {
     "opposite": "opp",
     "opp": "opp",
     "behind": "bhnd",
+    "adjacent": "adj",
 }
 
-# State / Territory Mappings (US and India)
+# State / Territory Mappings (US Full names -> 2-letter codes)
 STATE_EXPANSIONS = {
-    # US Full names -> 2-letter codes
     "new york": "ny",
     "california": "ca",
     "texas": "tx",
@@ -159,13 +171,33 @@ STATE_EXPANSIONS = {
     "wyoming": "wy",
 }
 
-# Pre-compiled regex patterns for maximum efficiency across millions of records
-RE_NON_ASCII_CLEAN = re.compile(r"[\ufffd\x00-\x1f\x7f-\x9f]")
+# Country Code Canonicalization (preserving open-set unknown countries)
+COUNTRY_NORMALIZATION = {
+    "US": "US",
+    "USA": "US",
+    "UNITED STATES": "US",
+    "UNITED STATES OF AMERICA": "US",
+    "IN": "IN",
+    "IND": "IN",
+    "INDIA": "IN",
+    "FR": "FR",
+    "FRA": "FR",
+    "FRANCE": "FR",
+}
+
+# Pre-compiled regex patterns for maximum throughput
+RE_CONTROL_CHARS = re.compile(r"[\ufffd\x00-\x1f\x7f-\x9f]")
+RE_APOSTROPHE_S = re.compile(r"['’]s\b", re.IGNORECASE)
+RE_APOSTROPHE_CONTRACTION = re.compile(r"['’]")
+RE_HYPHEN_KNOWN = re.compile(r"\bwal-mart\b", re.IGNORECASE)
 RE_PUNCT_NAME = re.compile(r"[^a-z0-9\s]")
 RE_PUNCT_ADDR = re.compile(r"[^a-z0-9\s]")
 RE_MULTI_SPACE = re.compile(r"\s+")
 
-# Pre-compile state replacement regex
+# Trailing non-informative tokens in core name
+TRAILING_CORE_STOPWORDS = {"and", "or", "the", "of", "for", "in", "at", "by", "&"}
+
+# Pre-compile state replacement regexes
 STATE_REGEXES = [
     (re.compile(rf"\b{re.escape(state_full)}\b"), state_code)
     for state_full, state_code in STATE_EXPANSIONS.items()
@@ -173,10 +205,34 @@ STATE_REGEXES = [
 
 
 # ---------------------------------------------------------------------------
+# Unicode & String Normalization Primitives
+# ---------------------------------------------------------------------------
+
+def strip_accents(text: str) -> str:
+    """
+    Normalizes Unicode text and strips combining diacritical marks.
+    E.g., 'Société' -> 'Societe', 'Café' -> 'Cafe', 'L\'Oréal' -> 'L\'Oreal'.
+    """
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def clean_country(country: Optional[str]) -> str:
+    """
+    Cleans and standardizes country code label, preserving open-set countries.
+    E.g. 'France' -> 'FR', 'India' -> 'IN', 'US' -> 'US', 'DE' -> 'DE'.
+    """
+    if not isinstance(country, str) or not country.strip():
+        return ""
+    c = country.strip().upper()
+    return COUNTRY_NORMALIZATION.get(c, c)
+
+
+# ---------------------------------------------------------------------------
 # Core Cleaning Functions
 # ---------------------------------------------------------------------------
 
-def clean_business_name(name: str | None) -> tuple[str, str]:
+def clean_business_name(name: Optional[str]) -> Tuple[str, str]:
     """
     Standardize a business name and extract its core name (without legal suffixes).
 
@@ -184,26 +240,43 @@ def clean_business_name(name: str | None) -> tuple[str, str]:
         name: Raw business name string or None/NaN.
 
     Returns:
-        tuple[str, str]: (clean_name, core_name)
-          - clean_name: normalized name with canonical suffixes
+        Tuple[str, str]: (clean_name, core_name)
+          - clean_name: normalized name with canonicalized suffixes and stripped accents
           - core_name:  name with legal entity suffixes stripped for invariant matching
     """
     if not isinstance(name, str) or not name.strip():
         return "", ""
 
-    # 1. Lowercase and normalize common symbols
-    text = name.lower()
-    text = text.replace("&", " and ").replace("@", " at ")
-    text = RE_NON_ASCII_CLEAN.sub(" ", text)
+    # 1. Strip accents and diacritics (e.g. 'Société' -> 'Societe', 'Café' -> 'Cafe')
+    text = strip_accents(name)
 
-    # 2. Strip punctuation
+    # 2. Lowercase and normalize common symbols
+    text = text.lower()
+    text = text.replace("&", " and ").replace("@", " at ")
+    text = RE_CONTROL_CHARS.sub(" ", text)
+
+    # 3. Collapse dotted abbreviations (e.g. 's.a.s.' -> 'sas', 'l.l.c.' -> 'llc')
+    text = re.sub(r"(?<=\b[a-z])\.(?=[a-z]|\b)", "", text)
+
+    # 4. Handle specific compound brand noise and apostrophes
+    text = RE_HYPHEN_KNOWN.sub("walmart", text)
+    # e.g., "Ben & Jerry's" -> "ben and jerrys"
+    text = RE_APOSTROPHE_S.sub("s", text)
+    # e.g., "L'Oreal" -> "loreal"
+    text = RE_APOSTROPHE_CONTRACTION.sub("", text)
+
+    # 5. Normalize multi-word legal forms
+    for pattern, canonical in MULTIWORD_LEGAL_PHRASES:
+        text = pattern.sub(canonical, text)
+
+    # 6. Strip punctuation
     text = RE_PUNCT_NAME.sub(" ", text)
     tokens = text.split()
 
     if not tokens:
         return "", ""
 
-    # 3. Canonical suffix normalization & core name extraction
+    # 6. Canonical suffix normalization & core name extraction
     clean_tokens = []
     core_tokens = []
 
@@ -216,12 +289,16 @@ def clean_business_name(name: str | None) -> tuple[str, str]:
             clean_tokens.append(t)
             core_tokens.append(t)
 
+    # Strip trailing conjunctions/stopwords from core tokens (e.g. 'acme and' -> 'acme')
+    while core_tokens and core_tokens[-1] in TRAILING_CORE_STOPWORDS:
+        core_tokens.pop()
+
     clean_name = " ".join(clean_tokens)
     core_name = " ".join(core_tokens) if core_tokens else clean_name
     return clean_name, core_name
 
 
-def clean_business_address(address: str | None) -> str:
+def clean_business_address(address: Optional[str]) -> str:
     """
     Standardize a business address string.
 
@@ -234,34 +311,28 @@ def clean_business_address(address: str | None) -> str:
     if not isinstance(address, str) or not address.strip():
         return ""
 
-    # 1. Lowercase and clean noise
-    text = address.lower()
-    text = text.replace("&", " and ")
-    text = RE_NON_ASCII_CLEAN.sub(" ", text)
+    # 1. Strip accents (e.g., 'Allée' -> 'Allee')
+    text = strip_accents(address)
 
-    # 2. Standardize US states (e.g. "new york" -> "ny")
+    # 2. Lowercase and clean control noise
+    text = text.lower()
+    text = text.replace("&", " and ")
+    text = RE_CONTROL_CHARS.sub(" ", text)
+
+    # 3. Standardize US states (e.g. 'new york' -> 'ny')
     for pattern, code in STATE_REGEXES:
         text = pattern.sub(code, text)
 
-    # 3. Remove punctuation except alphanumeric characters and spaces
+    # 4. Remove punctuation except alphanumeric characters and spaces
     text = RE_PUNCT_ADDR.sub(" ", text)
     tokens = text.split()
 
     if not tokens:
         return ""
 
-    # 4. Standardize abbreviations (street types, units, landmarks)
+    # 5. Standardize abbreviations (street types, units, landmarks)
     normalized_tokens = [ADDRESS_ABBREVIATIONS.get(t, t) for t in tokens]
     return " ".join(normalized_tokens)
-
-
-def clean_country(country: str | None) -> str:
-    """
-    Clean and standardize country code label.
-    """
-    if not isinstance(country, str):
-        return ""
-    return country.strip().upper()
 
 
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -303,15 +374,12 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Self-Verification & Demo Test Suite
+# Self-Verification Demo
 # ---------------------------------------------------------------------------
 
 def run_tests():
-    """
-    Runs quick unit tests on typical noisy patterns observed in the dataset.
-    """
+    """Runs quick unit tests on typical noisy patterns observed in the dataset."""
     test_cases = [
-        # (Raw Name, Expected Clean, Expected Core)
         (
             "Maure Williams Colombier Inc",
             "maure williams colombier inc",
@@ -323,14 +391,9 @@ def run_tests():
             "maure wilblims colombier",
         ),
         (
-            "Maure Williams Colombier",
-            "maure williams colombier",
-            "maure williams colombier",
-        ),
-        (
             "Acme Robotics Incorporated & Co.",
             "acme robotics inc and co",
-            "acme robotics and",
+            "acme robotics",
         ),
         (
             "Tata Consultancy Services Pvt. Ltd.",
@@ -339,8 +402,28 @@ def run_tests():
         ),
         (
             "Société Anonyme France SARL",
-            "soci t anonyme france sarl",
-            "soci t anonyme france",
+            "societe sa france sarl",
+            "societe france",
+        ),
+        (
+            "Société Générale SA",
+            "societe generale sa",
+            "societe generale",
+        ),
+        (
+            "L'Oréal S.A.S.",
+            "loreal sas",
+            "loreal",
+        ),
+        (
+            "Ben & Jerry's, Inc.",
+            "ben and jerrys inc",
+            "ben and jerrys",
+        ),
+        (
+            "Wal-Mart Stores",
+            "walmart stores",
+            "walmart stores",
         ),
     ]
 

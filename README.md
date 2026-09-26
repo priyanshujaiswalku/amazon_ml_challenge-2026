@@ -92,3 +92,16 @@ python src/matching_model.py --mode train
 python src/matching_model.py --mode predict
 ```
 This trains the pairwise model, optimizes decision threshold for $F_{0.5}$, and exports `output/matching_results.tsv` and `output/candidate_pairs.tsv`.
+
+### 5. Format & Integrity Validation (Step 5)
+```bash
+python utils/validate_submission.py --matching output/matching_results.tsv --candidate output/candidate_pairs.tsv --test-dir dataset/test --check-ids
+```
+Audits formatting, tab delimiters, missing entities, and cross-file constraints before portal submission.
+
+### 6. Automated Packaging (Step 6)
+```bash
+python utils/package_submission.py --team-name team_priyanshu
+```
+Packages outputs, runnable source code, reproduction instructions, dependencies, and methodology template into `<team_name>_submission.zip`.
+

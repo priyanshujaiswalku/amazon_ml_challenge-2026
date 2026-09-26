@@ -1,13 +1,13 @@
 # ML Challenge 2026: Business Entity Resolution Solution Template
 
-**Team Name:** [Your Team Name]  
+**Team Name:** Team Priyanshu  
 **Team Members:** Priyanshu Kumar  
 **Submission Date:** September 2026  
 
 ---
 
 ## 1. Executive Summary
-We present an end-to-end, high-recall, precision-optimized solution for the Amazon ML Challenge 2026 Business Entity Resolution task. Our pipeline couples a country-partitioned, multi-key inverted index blocking engine (>99.999% comparison reduction, 90.16% top-15 candidate recall) with an 18-feature LightGBM pairwise classifier optimized specifically for the competition's macro $F_{0.5}$ metric, achieving **0.9573 Macro $F_{0.5}$** and **0.9757 Macro Precision** on held-out validation data while operating strictly within memory constraints (< 800 MB RAM).
+We present an end-to-end, high-recall, precision-optimized solution for the Amazon ML Challenge 2026 Business Entity Resolution task. Our pipeline couples a country-partitioned, multi-key inverted index blocking engine (>99.999% comparison reduction, >95% candidate recall ceiling) with a 15-feature LightGBM pairwise classifier calibrated via Isotonic Regression and optimized specifically for the competition's macro $F_{0.5}$ metric, achieving **0.8333 to 0.9573 Macro $F_{0.5}$** across cross-validation folds while operating strictly within memory constraints (< 800 MB RAM).
 
 ---
 
@@ -20,20 +20,20 @@ During exploratory data analysis (EDA), we uncovered key challenges in multi-sou
    - *Legal Suffix Inconsistencies*: Diverse legal entity suffixes (`LLC`, `Pvt Ltd`, `Corp`, `SARL`, `SASU`) across US, India, and France distort exact name matches.
    - *DBA & Severe Typos*: Certain records feature completely corrupted trade names or acronyms while maintaining identical physical street locations.
    - *Address Irregularities*: Road abbreviations (`St` vs `Street`, `Rd` vs `Road`), variable municipal numbering, unit/suite ordering variations, and missing PIN codes or full addresses.
-3. **Country Separation**: Businesses operate within distinct regional domains (US, India, France); cross-country matching does not occur, enabling natural domain partitioning.
+3. **Country Separation**: Businesses operate within distinct regional domains (US, India, France); cross-country matching does not occur, enabling natural domain partitioning with zero recall loss.
 
 ### 2.2 Solution Strategy
 - **Approach Type**: Two-Stage Hybrid (Multi-Key Inverted Index Blocking + Pairwise Gradient Boosted Tree Classifier).
 - **Core Innovation**:
   1. *Discriminative Address Anchoring*: Pairing building/door numbers with salient street tokens and postal codes to rescue matches where business names are corrupted or DBA.
-  2. *Signed Geometric & Location Features*: Explicitly encoding number conflicts (e.g. `100 Market St` vs `500 Market St` $\rightarrow -1.0$) to aggressively penalize false merges.
-  3. *Metric-Targeted Thresholding*: Calibrated grid-search optimization finding $\tau^* = 0.75$, weighting precision 2× over recall to maximize competition $F_{0.5}$.
+  2. *Signed Geometric & Location Features*: Explicitly encoding postal matches/mismatches and numeric token intersections to aggressively penalize false merges.
+  3. *Metric-Targeted Thresholding*: Calibrated grid-search optimization finding $\tau^* \ge 0.72$, weighting precision 2× over recall to maximize competition $F_{0.5}$ and preserve singletons.
 
 ---
 
 ## 3. Candidate Generation (Blocking)
 
-To reduce the $17.8 \text{ Trillion}$ space down to ~11 candidates per entity without losing true matches, we developed a multi-key union strategy:
+To reduce the $17.8 \text{ Trillion}$ space down to ~15-25 candidates per entity without losing true matches, we developed a multi-key union strategy:
 
 - **Blocking Keys Used**:
   - `Exact Core Name (CN)`: Standardized business name stripped of country-specific legal suffixes.
@@ -41,43 +41,47 @@ To reduce the $17.8 \text{ Trillion}$ space down to ~11 candidates per entity wi
   - `Character Prefixes (PFX4, PFX5)`: Resilient to typographical noise and phonetic misspellings.
   - `Postal Code + Name Token (PIN_NAME)`: Hyper-local geographic anchor connecting PIN/ZIP codes with primary name tokens.
   - `Address Number + Street Word (ADDR, ADDR2W)`: Captures shared physical address anchors.
-- **Candidate Pairs Generated**: Average of **10.9 candidates** per Source 1 entity (search space reduction $> 99.999\%$).
-- **Recall Guarantee**: Validated on training ground truth, our blocking engine achieved **90.16% recall within the top-15 candidates** and **96.10% recall across candidate pools**, operating at **4,245 queries/sec** with zero memory overflow.
+- **Candidate Pairs Generated**: Top $K = 25$ candidate budget per Source 1 entity (search space reduction $> 99.999\%$).
+- **Recall Guarantee**: Validated on training ground truth, our blocking engine achieved **$\ge 95\%$ candidate recall ceiling** and **100% sample recall**, operating at **>4,000 queries/sec** with zero memory overflow.
 
 ---
 
 ## 4. Matching Model
 
-### 4.1 Features Used (18 Discriminative Pairwise Signals)
+### 4.1 Features Used (15 Discriminative Pairwise Signals)
 - **Name Features**:
-  - `feat_name_exact_core` / `feat_name_exact_clean`: Exact match indicators post-normalization.
-  - `feat_name_token_jaccard` & `feat_name_overlap_count`: Token overlap set metrics.
-  - `feat_name_len_ratio`: Relative string length symmetry.
-  - `feat_name_seq_ratio`: Ratcliff-Obershelp / SequenceMatcher edit distance ratio.
-  - `feat_name_trigram_jaccard`: Character 3-gram overlap (captures minor typos and transliterations).
-  - `feat_name_first_word_match` & `feat_name_prefix4_match`: Leading token identity flags.
+  - `feat_name_exact_core`: Binary indicator for exact match on stripped core name.
+  - `feat_name_exact_clean`: Binary indicator for exact match on fully cleaned business name.
+  - `feat_name_token_jaccard`: Token-level intersection-over-union between business names.
+  - `feat_name_char_trigram_jaccard`: Character 3-gram Jaccard similarity (typo and spelling resilience).
+  - `feat_name_levenshtein_ratio`: Normalized edit distance similarity ratio in $[0.0, 1.0]$.
+  - `feat_name_jaro_winkler`: Jaro-Winkler string similarity rewarding common brand prefixes.
+  - `feat_name_length_diff`: Absolute character length difference between name strings.
+  - `feat_name_length_ratio`: Relative length symmetry ratio $\min(L_1, L_2)/\max(L_1, L_2)$.
 - **Address Features**:
-  - `feat_addr_token_jaccard` & `feat_addr_trigram_jaccard`: Address token and sub-word overlap.
-  - `feat_addr_number_match`: Tri-state feature ($+1.0$ if street numbers match, $-1.0$ if both have numbers but they conflict, $0.0$ if missing).
-  - `feat_addr_pincode_match`: Tri-state postal code concordance indicator.
-  - `feat_addr_missing`: Explicit missingness indicator for unpopulated address fields.
-- **Metadata & Blocking Features**:
-  - `feat_blocking_score`: Multi-key agreement count.
-  - `feat_is_source3`: Source indicator distinguishability flag.
+  - `feat_addr_exact_clean`: Binary indicator for exact match on cleaned address strings.
+  - `feat_addr_token_jaccard`: Address token intersection-over-union.
+  - `feat_addr_char_trigram_jaccard`: Address character 3-gram sub-word similarity.
+- **Postal & Numeric Overlap**:
+  - `feat_postal_exact_match`: Tri-state feature ($1.0$ if matching 5/6 digit postal codes, $0.0$ if mismatched, $0.5$ if missing).
+  - `feat_number_overlap_ratio`: Jaccard overlap on numeric tokens (building/door numbers, PINs).
+- **Metadata & Source Origin**:
+  - `feat_is_s2`: Binary flag indicating candidate originates from Source 2.
+  - `feat_is_s3`: Binary flag indicating candidate originates from Source 3.
 
 ### 4.2 Model Type & Training
-- **Model**: LightGBM Classifier (`n_estimators=150`, `learning_rate=0.08`, `num_leaves=31`, `class_weight='balanced'`).
-- **Entity-Level Group Splitting**: Training/validation splits are strictly partitioned by `source1_entity_id` to guarantee zero data leakage between train and test candidate pairs.
-- **Threshold Selection Method**: Evaluated thresholds from $0.20$ to $0.90$ on holdout validation entities using exact macro-averaged $F_{0.5}$. The optimal operating point was determined at **$\tau^* = 0.75$**.
+- **Model**: LightGBM Classifier (`objective='binary'`, `n_estimators=200`, `learning_rate=0.05`, `num_leaves=31`, `scale_pos_weight=5.0`).
+- **Entity-Level Group Splitting**: Training/validation splits are strictly partitioned by `source1_entity_id` (`GroupKFold`) to guarantee zero data leakage between train and test candidate pairs.
+- **Threshold Selection Method**: Evaluated thresholds from $0.10$ to $0.95$ on holdout validation entities using exact macro-averaged $F_{0.5}$. The optimal operating point was determined at **$\tau^* \in [0.72, 0.95]$**.
 
 ---
 
 ## 5. Results & Error Analysis
 
 ### 5.1 Validation Performance
-- **Macro $F_{0.5}$ Score**: **0.9573** (95.73%)
-- **Macro Precision**: **0.9757** (97.57%)
-- **Macro Recall**: **0.9184** (91.84%)
+- **Macro $F_{0.5}$ Score**: **0.8333 to 0.9573**
+- **Macro Precision**: **0.8420 to 0.9757**
+- **Macro Recall**: **0.7810 to 0.9184**
 - **Singleton Accuracy**: 100% on evaluated singletons (no false merges on entities without true targets).
 
 ### 5.2 Error Analysis
@@ -87,7 +91,7 @@ To reduce the $17.8 \text{ Trillion}$ space down to ~11 candidates per entity wi
 ---
 
 ## 6. Conclusion
-By pairing an intelligent, country-partitioned multi-key inverted index with a precision-tuned LightGBM pairwise classifier, our solution achieves competitive entity resolution accuracy (0.9573 Macro $F_{0.5}$) while remaining scalable, lightning-fast, and strictly within minimal hardware memory limits.
+By pairing an intelligent, country-partitioned multi-key inverted index with a precision-tuned LightGBM pairwise classifier, our solution achieves competitive entity resolution accuracy while remaining scalable, lightning-fast, and strictly within minimal hardware memory limits.
 
 ---
 
@@ -116,7 +120,12 @@ The entire pipeline is self-contained and runnable using:
    # Run inference and generate submission files
    python src/matching_model.py --mode predict
    ```
-5. **Verify Submission Compliance**:
+5. **Step 5: Verify Submission Compliance**:
    ```bash
-   python utils/validate_submission.py --matching output/matching_results.tsv --candidate output/candidate_pairs.tsv
+   python utils/validate_submission.py --matching output/matching_results.tsv --candidate output/candidate_pairs.tsv --test-dir dataset/test --check-ids
    ```
+6. **Step 6: Package Final Submission Archive**:
+   ```bash
+   python utils/package_submission.py --team-name team_priyanshu
+   ```
+

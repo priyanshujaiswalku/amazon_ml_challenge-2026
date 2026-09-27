@@ -138,3 +138,30 @@ Whenever you modify blocking keys, engineer new features, retrain models, or adj
 3. Record validation metrics: Candidate Recall, Reduction Ratio, Precision, Recall, and Macro $F_{0.5}$.
 4. Note artifact paths in `output/`.
 5. Update `context/progress_tracker.md` to reflect the milestone status.
+
+### Experiment: EXP-006 (Leakage-Free Calibration Evaluation)
+- **Date**: 2026-09-27
+- **Objective**: Remove validation-label leakage from probability calibration so threshold selection and reported validation metrics reflect an independent held-out fold.
+- **Change**: Replaced isotonic calibration fitted on the validation fold with sigmoid calibration fitted by 3-fold CV within the training fold, in both grouped CV and the single holdout training path. Validation entity IDs are taken from the held-out pair groups so entities with no retrieved candidates are scored as empty predictions.
+- **Expected benefit**: A more reliable operating threshold and less optimistic validation estimates; any leaderboard improvement must be measured after retraining and resubmission.
+- **Benchmark status**: The grouped CV benchmark for this code change was not run. The dataset was later hydrated from Git LFS and a separate corrected holdout diagnostic is recorded under EXP-008.
+- **Artifact**: `src/matching_model.py`
+- **Takeaway**: Evaluation protocol is corrected; the previous reported validation score is not directly comparable because its calibrator was fitted on validation labels.
+
+### Experiment: EXP-007 (Full-Test Model Inference)
+- **Date**: 2026-09-27
+- **Objective**: Produce complete leaderboard predictions from the full 1,732,544-row test Source 1 set within the submission window.
+- **Inference strategy**: Desktop repository's disk-backed LightGBM pipeline, with country isolation and exact-core, prefix, or postal retrieval up to its configured candidate cap.
+- **Results**: Official validator PASS. `matching_results.tsv`: 1,732,544 rows, 1,434,839 non-empty, 297,705 empty. `candidate_pairs.tsv`: 1,732,544 rows, 1,731,299 non-empty, 1,245 empty.
+- **Leaderboard result**: User reports 0.466 after uploading this output. No test-label score can be computed locally.
+- **Validation caveat**: The reported 0.9826 training validation is optimistic because the trainer forcibly adds each known true ID to candidates and fits calibration on the same validation labels. EXP-008 replaces this evaluation protocol.
+- **Artifacts**: `output/matching_results.tsv`, `output/candidate_pairs.tsv`.
+- **Takeaway**: Output completeness and format pass; the inference quality did not improve the reported leaderboard score.
+
+### Experiment: EXP-008 (Unleaked Grouped Holdout Diagnostic)
+- **Date**: 2026-09-27
+- **Objective**: Diagnose the gap between the reported training validation score and the unchanged leaderboard score.
+- **Protocol correction**: Split Source 1 rows before pair construction; do not append known true IDs or extra distractors to validation candidates; score all held-out Source 1 rows, including rows with no candidates; choose the threshold on held-out raw model probabilities.
+- **Sample results**: 3,000 sampled S1 rows; 43,962 candidate pairs; 9,853 positives; sampled-index blocking recall `0.9444`; held-out macro F0.5 `0.9581`, precision `0.9805`, recall `0.9096`, threshold `0.87`.
+- **Interpretation**: This is still a small sample and uses a sampled target index, so it is not a reliable prediction of leaderboard performance. The prior `0.9826` score was invalid because known positives were forcibly added to candidate sets and calibration was fitted on validation labels.
+- **Current submission**: Desktop artifact copied to `output/matching_results.tsv`; 1,732,544 rows; official validator PASS. Its leaderboard result remains the only test-set performance evidence.

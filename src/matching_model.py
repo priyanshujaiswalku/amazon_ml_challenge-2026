@@ -569,16 +569,22 @@ def run_cross_validation(
         )
         clf.fit(df_X_tr, y_tr)
 
-        # Probability Calibration
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=FutureWarning)
-            calibrated = CalibratedClassifierCV(clf, cv="prefit", method="isotonic")
-            calibrated.fit(df_X_val, y_val)
+        # Calibrate using training-fold data only. Fitting calibration on the
+        # validation fold leaks its labels into both the score and threshold.
+        calibrated = CalibratedClassifierCV(
+            lgb.LGBMClassifier(
+                objective="binary", n_estimators=150, learning_rate=0.05,
+                num_leaves=31, max_depth=6, scale_pos_weight=5.0,
+                random_state=42, n_jobs=2, verbose=-1,
+            ),
+            cv=3,
+            method="sigmoid",
+        )
+        calibrated.fit(df_X_tr, y_tr)
         val_probs = calibrated.predict_proba(df_X_val)[:, 1]
 
         val_pairs = [pair_metadata[i] for i in val_idx]
-        val_s1_ids = {sid for sid, _ in val_pairs}
+        val_s1_ids = set(s1_groups[val_idx])
         val_gt = {sid: gt_map.get(sid, set()) for sid in val_s1_ids}
 
         best_t, best_f, p, r = optimize_decision_threshold(val_probs, val_pairs, val_gt, step=0.01)
@@ -700,17 +706,24 @@ def train_matching_model(sample_size: int = 1500, top_k: int = 25) -> Tuple[Any,
     for idx in sorted_idx[:5]:
         print(f"  - {FEATURE_COLUMNS[idx]:<32}: {importances[idx]:>4}")
 
-    # Calibrate Probabilities
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=FutureWarning)
-        calibrated_clf = CalibratedClassifierCV(clf, cv="prefit", method="isotonic")
-        calibrated_clf.fit(df_X_val, y_val)
+    # Calibrate using training-fold data only; the held-out fold remains
+    # independent for threshold selection and validation reporting.
+    calibrated_clf = CalibratedClassifierCV(
+        lgb.LGBMClassifier(
+            objective="binary", n_estimators=200, learning_rate=0.05,
+            num_leaves=31, max_depth=6, subsample=0.8,
+            colsample_bytree=0.8, scale_pos_weight=5.0,
+            random_state=42, n_jobs=2, verbose=-1,
+        ),
+        cv=3,
+        method="sigmoid",
+    )
+    calibrated_clf.fit(df_X_train, y_train)
     val_probs = calibrated_clf.predict_proba(df_X_val)[:, 1]
 
     # Optimize Decision Threshold for Macro F_0.5
     val_pairs = [pair_metadata[i] for i in val_idx]
-    val_s1_ids = {sid for sid, _ in val_pairs}
+    val_s1_ids = set(s1_groups[val_idx])
     val_gt = {sid: gt_map.get(sid, set()) for sid in val_s1_ids}
 
     best_threshold, best_f05, best_p, best_r = optimize_decision_threshold(

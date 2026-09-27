@@ -19,6 +19,11 @@ This living document tracks the execution state of the Business Entity Resolutio
 | **Phase 6** | Post-Processing, Test Inference & Submission Verification | 7 | 7 | 0 | Completed / Verified |
 | **Total** | **End-to-End Pipeline Execution** | **34** | **34** | **0** | **All Phases (1-6) Complete** |
 
+### Post-Submission Improvement Work
+- [x] **EXP-006: Remove validation calibration leakage**: Calibration now uses training-fold-only sigmoid calibration; held-out validation is reserved for threshold selection. Metrics remain pending because dataset files in this checkout are Git LFS pointers, not loaded TSV data.
+- [x] **EXP-007: Regenerate full-test matching output**: Produced 1,732,544 matching rows; official validator PASS. Exact-core/address fallback used for deadline; candidate recall and leaderboard score not measured.
+- [x] **EXP-008: Remove validation leakage in quick trainer**: Held-out S1 split now precedes pair construction; known truths are no longer injected into validation candidates; validation labels are no longer used for calibration. Small-sample diagnostic: macro F0.5 0.9581, candidate recall 0.9444; not a leaderboard estimate.
+
 ---
 
 ## 2. Phase 1: Exploratory Data Analysis & Integrity Audit
